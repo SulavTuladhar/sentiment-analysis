@@ -1,57 +1,74 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, jsonify  
 import pickle
 import re
 import nltk
 from nltk.stem.porter import PorterStemmer
 from nltk.corpus import stopwords
 
-# Ensure to download stopwords if not already done
-# nltk.download('stopwords')
-
-# Initialize Flask app
 app = Flask(__name__)
 
-# Load the sentiment analysis model and TF-IDF vectorizer
 with open('clf.pkl', 'rb') as f:
     clf = pickle.load(f)
 with open('tfidf.pkl', 'rb') as f:
     tfidf = pickle.load(f)
 
-# Define stopwords and emoticon pattern
 stopwords_set = set(stopwords.words('english'))
-emoticon_pattern = re.compile(r'(?::|;|=)(?:-)?(?:\)|\(|D|P)')  # Use raw string
+emoticon_pattern = re.compile(r'(?::|;|=)(?:-)?(?:\)|\(|D|P)')  
 
 def preprocessing(text):
-    # Remove HTML tags
-    text = re.sub(r'<[^>]*>', '', text)  # Use raw string
-    emojis = emoticon_pattern.findall(text)  # Find emoticons
-    # Clean and normalize text
-    text = re.sub(r'[\W+]', ' ', text.lower()) + ' '.join(emojis).replace('-', '')  # Use raw string
+    text = re.sub(r'<[^>]*>', '', text)  
+    emojis = emoticon_pattern.findall(text)  
+    text = re.sub(r'[\W+]', ' ', text.lower()) + ' '.join(emojis).replace('-', '')  
     
-    # Initialize the PorterStemmer
     prter = PorterStemmer()
-    # Stem words and remove stopwords
     text = [prter.stem(word) for word in text.split() if word not in stopwords_set]
 
     return " ".join(text)
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['POST'])
 def analyze_sentiment():
-    if request.method == 'POST':
-        comment = request.form.get('comment')
+    data = request.json  
 
-        # Preprocess the comment
-        preprocessed_comment = preprocessing(comment)
+    reviews = data.get('data')
+    if not isinstance(reviews, list):
+        return jsonify({'error': 'Invalid data format: Expected a list of objects with reviewText'}), 400
 
-        # Transform the preprocessed comment into a feature vector
-        comment_vector = tfidf.transform([preprocessed_comment])
+    results = []
+    positive_count = 0
+    negative_count = 0
 
-        # Predict the sentiment
-        sentiment = clf.predict(comment_vector)[0]
+    for item in reviews:
+        if isinstance(item, dict):  
+            comment = item.get('reviewText')
+            if comment:
+                preprocessed_comment = preprocessing(comment)
+                comment_vector = tfidf.transform([preprocessed_comment])
+                sentiment = clf.predict(comment_vector)[0]  
 
-        return render_template('index.html', sentiment=sentiment)
+                if sentiment == 1:  
+                    positive_count += 1
+                elif sentiment == 0:  
+                    negative_count += 1
 
-    return render_template('index.html')
+                results.append({'reviewText': comment, 'sentiment': int(sentiment)})
+            else:
+                results.append({'error': 'reviewText field is missing'})
+        else:
+            results.append({'error': 'Each item should be an object with reviewText'})
+
+    total_reviews = positive_count + negative_count
+    avg_positive = round((positive_count / total_reviews) * 100, 2) if total_reviews > 0 else 0
+    avg_negative = round((negative_count / total_reviews) * 100, 2) if total_reviews > 0 else 0
+
+    return jsonify({
+        # 'received_data': results,
+        'summary': {
+            'positive_count': positive_count,
+            'negative_count': negative_count,
+            'average_positive': avg_positive,
+            'average_negative': avg_negative
+        }
+    }), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
